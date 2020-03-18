@@ -5187,6 +5187,108 @@ again:
 	}
 	return pkts;
 }
+
+
+int
+pcap_read_linux_mmap_v3_group(pcap_t *handle,
+                              int max_packets,
+                              pcap_group_handler callback,
+                              u_char *user)
+{
+	struct pcap_linux *handlep = handle->priv;
+	union thdr h;
+	int pkts = 0;
+	int ret;
+#define MAX_PACKETS_PER_GROUPING 1024
+        struct tpacket3_hdr pkt_list[MAX_PACKETS_PER_GROUPING];
+
+again:
+	if (handlep->current_packet == NULL) {
+		/* wait for frames availability.*/
+		h.raw = RING_GET_CURRENT_FRAME(handle);
+		if (h.h3->hdr.bh1.block_status == TP_STATUS_KERNEL) {
+			/*
+			 * The current frame is owned by the kernel; wait
+			 * for a frame to be handed to us.
+			 */
+			ret = pcap_wait_for_frames_mmap(handle);
+			if (ret) {
+				return ret;
+			}
+		}
+	}
+	h.raw = RING_GET_CURRENT_FRAME(handle);
+	if (h.h3->hdr.bh1.block_status == TP_STATUS_KERNEL) {
+		if (pkts == 0 && handlep->timeout == 0) {
+			/* Block until we see a packet. */
+			goto again;
+		}
+		return pkts;
+	}
+
+        /*
+	/* non-positive values of max_packets are used to require all
+	 * packets currently available in the ring, but limit it to
+         * MAX_PACKETS_PER_GROUPING if PACKET_COUNT_IS_UNLIMITED.
+         */
+        if(PACKET_COUNT_IS_UNLIMITED(max_packets)) {
+                max_packets = MAX_PACKETS_PER_GROUPING;
+        }
+
+	while(pkts < max_packets) {
+		int packets_to_read;
+
+		if (handlep->current_packet == NULL) {
+			h.raw = RING_GET_CURRENT_FRAME(handle);
+			if (h.h3->hdr.bh1.block_status == TP_STATUS_KERNEL)
+				break;
+
+			handlep->current_packet = h.raw + h.h3->hdr.bh1.offset_to_first_pkt;
+			handlep->packets_left = h.h3->hdr.bh1.num_pkts;
+		}
+		packets_to_read = handlep->packets_left;
+
+		if (packets_to_read > (max_packets - pkts)) {
+			/*
+			 * We've been given a maximum number of packets
+			 * to process, and there are more packets in
+			 * this buffer than that.  Only process enough
+			 * of them to get us up to that maximum.
+			 */
+			packets_to_read = max_packets - pkts;
+		}
+		while (packets_to_read--) {
+			struct tpacket3_hdr* tp3_hdr = (struct tpacket3_hdr*) handlep->current_packet;
+                        fprintf(stderr, "packet: %p[%u] mac: %p[%u,%ld,%ld]",
+                                handlep->current_packet,
+                                tp3_hdr->tp_len,
+                                tp3_hdr->tp_mac,
+                                tp3_hdr->tp_snaplen,
+                                tp3_hdr->tp_sec,
+                                handle->opt.tstamp_precision == PCAP_TSTAMP_PRECISION_NANO ? tp3_hdr->tp_nsec : tp3_hdr->tp_nsec / 1000);
+			if (ret == 1) {
+				pkts++;
+				handlep->packets_read++;
+			} else if (ret < 0) {
+				handlep->current_packet = NULL;
+				return ret;
+			}
+			handlep->current_packet += tp3_hdr->tp_next_offset;
+			handlep->packets_left--;
+		}
+
+		/* check for break loop condition*/
+		if (handle->break_loop) {
+			handle->break_loop = 0;
+			return PCAP_ERROR_BREAK;
+		}
+	}
+	if (pkts == 0 && handlep->timeout == 0) {
+		/* Block until we see a packet. */
+		goto again;
+	}
+	return pkts;
+}
 #endif /* HAVE_TPACKET3 */
 
 static int

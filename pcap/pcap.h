@@ -330,6 +330,16 @@ struct pcap_addr {
 typedef void (*pcap_handler)(u_char *, const struct pcap_pkthdr *,
 			     const u_char *);
 
+typedef void (*pcap_group_handler)(u_char *,
+                                   const struct pcap_pkthdr *,
+                                   const u_char *);
+
+extern int
+pcap_read_linux_mmap_v3_group(pcap_t *handle,
+                              int max_packets,
+                              pcap_group_handler callback,
+                              u_char *user);
+
 /*
  * Error codes for the pcap API.
  * These will all be negative, so you can check for the success or
