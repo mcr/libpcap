@@ -5243,15 +5243,24 @@ again:
 
 	while(pkts < max_packets) {
 		int packets_to_read;
+                int packets_to_callup;
 
+                /*
+                 * current_packet will be NULL if this is the first time
+                 * processing this block
+                 */
 		if (handlep->current_packet == NULL) {
-			h.raw = RING_GET_CURRENT_FRAME(handle);
-			if (h.h3->hdr.bh1.block_status == TP_STATUS_KERNEL)
+                        h.raw = RING_GET_CURRENT_FRAME(handle);
+			if (h.h3->hdr.bh1.block_status == TP_STATUS_KERNEL) {
+                          fprintf(stderr, "Kernel packet, exiting\n");
 				break;
-
+                        }
 			handlep->current_packet = h.raw + h.h3->hdr.bh1.offset_to_first_pkt;
-			handlep->packets_left = h.h3->hdr.bh1.num_pkts;
-		}
+                }
+                handlep->packets_left = h.h3->hdr.bh1.num_pkts;
+                fprintf(stderr, "outer %d < %d left: %d\n",
+                        pkts, max_packets, handlep->packets_left);
+
 		packets_to_read = handlep->packets_left;
 
 		if (packets_to_read > (max_packets - pkts)) {
@@ -5263,32 +5272,78 @@ again:
 			 */
 			packets_to_read = max_packets - pkts;
 		}
-		while (packets_to_read--) {
+                packets_to_callup = 0;
+		while (packets_to_read-- > 0) {
 			struct tpacket3_hdr* tp3_hdr = (struct tpacket3_hdr*) handlep->current_packet;
-                        fprintf(stderr, "packet: %p[%u] mac: %p[%u,%ld,%ld]",
+                        unsigned char *bp = ((unsigned char *)tp3_hdr) + tp3_hdr->tp_mac;
+
+#if 0
+                        fprintf(stderr, "%u/%d packet: %p[%u,+%u] mac: %u"
+                                "[%02x%02x%02x%02x%02x%02x->%02x%02x%02x%02x%02x%02x]"
+                                "slen=[%u] s=[%ld.%ld]\n",
+                                handle->offset,
+                                packets_to_read,
                                 handlep->current_packet,
                                 tp3_hdr->tp_len,
+                                tp3_hdr->tp_next_offset,
                                 tp3_hdr->tp_mac,
+                                bp[6],bp[7],bp[8],bp[9],bp[10],bp[11],
+                                bp[0],bp[1],bp[2],bp[3],bp[4],bp[5],
                                 tp3_hdr->tp_snaplen,
                                 tp3_hdr->tp_sec,
                                 handle->opt.tstamp_precision == PCAP_TSTAMP_PRECISION_NANO ? tp3_hdr->tp_nsec : tp3_hdr->tp_nsec / 1000);
-			if (ret == 1) {
-				pkts++;
-				handlep->packets_read++;
-			} else if (ret < 0) {
-				handlep->current_packet = NULL;
-				return ret;
-			}
+
+#endif
+
+                        pkts++;
+                        handlep->packets_read++;
 			handlep->current_packet += tp3_hdr->tp_next_offset;
 			handlep->packets_left--;
+                        packets_to_callup++;
 		}
+
+                /* HERE is WHERE we CALL UP */
+                fprintf(stderr, "callup with %u packets\n", packets_to_callup);
 
 		/* check for break loop condition*/
 		if (handle->break_loop) {
 			handle->break_loop = 0;
 			return PCAP_ERROR_BREAK;
 		}
-	}
+
+                /*
+                 * packets_left is total number in the block, not how many
+                 * we chose to process.  When it gets to 0, then we need
+                 * a new block.
+                 */
+		if (handlep->packets_left <= 0) {
+			/*
+			 * Hand this block back to the kernel, and, if
+			 * we're counting blocks that need to be
+			 * filtered in userland after having been
+			 * filtered by the kernel, count the one we've
+			 * just processed.
+			 */
+			h.h3->hdr.bh1.block_status = TP_STATUS_KERNEL;
+			if (handlep->blocks_to_filter_in_userland > 0) {
+				handlep->blocks_to_filter_in_userland--;
+				if (handlep->blocks_to_filter_in_userland == 0) {
+					/*
+					 * No more blocks need to be filtered
+					 * in userland.
+					 */
+					handlep->filter_in_userland = 0;
+				}
+			}
+
+			/* next block */
+			if (++handle->offset >= handle->cc)
+				handle->offset = 0;
+
+			handlep->current_packet = NULL;
+		}
+        }
+
 	if (pkts == 0 && handlep->timeout == 0) {
 		/* Block until we see a packet. */
 		goto again;
