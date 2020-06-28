@@ -5087,6 +5087,7 @@ again:
 			}
 		}
 	}
+
 	h.raw = RING_GET_CURRENT_FRAME(handle);
 	if (h.h3->hdr.bh1.block_status == TP_STATUS_KERNEL) {
 		if (pkts == 0 && handlep->timeout == 0) {
@@ -5148,6 +5149,11 @@ again:
 			handlep->packets_left--;
 		}
 
+                /*
+                 * packets_left is total number in the block, not how many
+                 * we chose to process.  When it gets to 0, then we need
+                 * a new block.
+                 */
 		if (handlep->packets_left <= 0) {
 			/*
 			 * Hand this block back to the kernel, and, if
